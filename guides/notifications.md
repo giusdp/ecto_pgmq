@@ -17,6 +17,10 @@ basis. After a notification is sent, additional notifications within the
 configured throttle interval will be suppressed. Throttling can be disabled by
 setting the throttle interval to `0`.
 
+`EctoPGMQ` enables notifications with an initially deferred trigger, so the
+throttle is checked as a sending transaction commits and concurrent senders
+don't wait for each other's transactions.
+
 ## Managing Notifications
 
 The notification configuration for a queue can be managed with

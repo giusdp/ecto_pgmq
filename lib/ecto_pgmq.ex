@@ -671,6 +671,28 @@ defmodule EctoPGMQ do
   defp enable_notifications(repo, queue, throttle, opts) do
     throttle = maybe_to_time(throttle, :millisecond)
     PGMQ.enable_notify_insert(repo, queue, throttle, opts)
+    defer_notifications(repo, queue, opts)
+  end
+
+  # Recreate PGMQ's insert trigger as initially deferred so that its throttle
+  # row is locked as senders commit rather than for their whole transaction
+  defp defer_notifications(repo, queue, opts) do
+    table = "#{PGMQ.schema()}.#{PGMQ.queue_table_name(queue)}"
+    trigger = "trigger_notify_queue_insert_listeners"
+
+    repo.query!("DROP TRIGGER #{trigger} ON #{table}", [], opts)
+
+    repo.query!(
+      """
+      CREATE CONSTRAINT TRIGGER #{trigger} AFTER INSERT ON #{table}
+      DEFERRABLE INITIALLY DEFERRED FOR EACH ROW
+      EXECUTE PROCEDURE #{PGMQ.schema()}.notify_queue_listeners('#{queue}')
+      """,
+      [],
+      opts
+    )
+
+    :ok
   end
 
   defp parse_poll_config({interval, timeout}) do

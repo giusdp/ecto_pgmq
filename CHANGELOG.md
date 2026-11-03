@@ -9,6 +9,9 @@ All notable changes to this project will be documented in this file.
 * Fix `EctoPGMQ.Producer` polling without a listener, which read again at once
   instead of waiting for the read interval
 
+* Defer PGMQ's insert trigger so concurrent senders don't wait for each other's
+  transactions
+
 ## [2.0.0] - 2026-07-15
 
 ### Changed
