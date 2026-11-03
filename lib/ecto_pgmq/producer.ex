@@ -181,8 +181,9 @@ if Code.ensure_loaded?(Broadway) do
 
       * `:read_interval` - An optional `t:Duration.t/0` or `t:timeout/0`
         denoting how long to wait between polls when there is outstanding demand
-        (`:infinity` to disable polling). Defaults to `5_000`. For more
-        information about configuring polling for a producer, see
+        (`:infinity` to disable polling, which requires a `:listener`). Defaults
+        to `5_000`. For more information about configuring polling for a
+        producer, see
         [Notifications and Producer Polling](#notifications-and-producer-polling).
 
       * `:read_opts` - An optional `t:EctoPGMQ.read_messages_opts/0` to be used
@@ -345,8 +346,9 @@ if Code.ensure_loaded?(Broadway) do
         cond do
           # Worker was able to meet demand and no more demand has been received
           outstanding == 0 -> true
-          # Worker was not able to meet demand and no notification was received
-          received < requested and not state.notified? -> is_nil(state.subscription)
+          # Worker was not able to meet demand and no notification was received,
+          # so wait for the next notification or read interval
+          received < requested and not state.notified? -> false
           # Worker was able to meet demand but more demand has been received or
           # worker was not able to meet demand but a notification was received
           true -> true
@@ -510,6 +512,12 @@ if Code.ensure_loaded?(Broadway) do
 
       # Validate presence of required keys
       Enum.each([:repo, :queue, :visibility_timeout], &Keyword.fetch!(opts, &1))
+
+      # Validate that the producer polls or listens
+      if is_nil(Keyword.fetch!(opts, :listener)) and Keyword.fetch!(opts, :read_interval) == :infinity do
+        raise ArgumentError, "Producers without a listener require a finite read interval"
+      end
+
       opts
     end
 
