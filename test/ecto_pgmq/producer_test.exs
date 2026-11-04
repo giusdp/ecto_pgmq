@@ -59,6 +59,26 @@ defmodule EctoPGMQ.ProducerTest do
     assert_receive {:success, ^message_id}
   end
 
+  test "will archive a failed message once it has been read the maximum number of times", ctx do
+    opts = [queue: ctx.queue.name, on_failure: :nothing, max_reads: 2, visibility_timeout: 0, read_interval: 100]
+    start_link_supervised!({TestPipeline, opts})
+
+    payloads = [Message.build(%{"encoded_pid" => TestPipeline.get_encoded_pid(), "fail" => true})]
+    response = EctoPGMQ.send_messages(Repo, ctx.queue.name, payloads)
+
+    # Validate that the message is read again until its last read fails
+    assert {:ok, [message_id]} = Map.fetch(response, ctx.queue.name)
+    assert_receive {:failure, ^message_id}
+    assert_receive {:failure, ^message_id}
+    assert poll_queue_empty?(ctx.queue.name)
+    assert archived_message_exists?(ctx.queue.name, message_id)
+  end
+
+  @tag :capture_log
+  test "will not start with an invalid maximum number of reads", ctx do
+    assert {:error, _} = start_supervised({TestPipeline, [queue: ctx.queue.name, max_reads: 0]})
+  end
+
   @tag :capture_log
   test "will not start without a listener or a read interval", ctx do
     opts = [queue: ctx.queue.name, listener: nil, read_interval: :infinity]

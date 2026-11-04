@@ -91,32 +91,25 @@ if Code.ensure_loaded?(Broadway) do
       * `:ack_action` - A required `t:ack_action/0` denoting how to acknowledge
         the message.
 
-    When used together, default acknowledgement actions and individual message
-    acknowledgement configuration can be used to implement more complex message
-    handling. For example, an `EctoPGMQ.Producer` can use `:delete` as the
-    default success acknowledgement, `:nothing` as the default failure
-    acknowledgement, and a code snippet like the one below to implement a
-    maximum number of attempts for each message:
+    When used together, default acknowledgement actions, individual message
+    acknowledgement configuration and the `:max_reads` option can be used to
+    implement more complex message handling. For example, an `EctoPGMQ.Producer`
+    can retry failed messages until they have been read 3 times and archive
+    messages that can never be processed right away:
 
     ```elixir
     alias Broadway.Message
 
-    @max_attempts 3
+    # Producer options
+    [on_success: :delete, on_failure: :nothing, max_reads: 3, ...]
 
     @impl Broadway
     def handle_message(_, message, _) do
       case do_process_pgmq_message(message.data) do
         :ok -> message
+        {:error, :invalid} -> message |> Message.failed(:invalid) |> Message.configure_ack(ack_action: :archive)
         {:error, reason} -> Message.failed(message, reason)
       end
-    end
-
-    @impl Broadway
-    def handle_failed(messages, _) do
-      Enum.map(messages, fn
-        %{data: %{reads: r}} = msg when r < @max_attempts -> msg
-        msg -> Message.configure_ack(msg, ack_action: :archive)
-      end)
     end
     ```
 
@@ -167,6 +160,11 @@ if Code.ensure_loaded?(Broadway) do
         For more information about notifications in general, see
         `EctoPGMQ.Notifications`.
 
+      * `:max_reads` - An optional `t:pos_integer/0` denoting how many times a
+        failed message can be read before it's archived instead of acknowledged
+        with `:on_failure`, or `nil` for no limit. Messages with a configured
+        acknowledgement are unaffected. Defaults to `nil`.
+
       * `:on_failure` - An optional `t:ack_action/0` denoting the default
         acknowledgement for failed messages. Defaults to `:archive`. For more
         information about acknowledgements, see
@@ -209,6 +207,7 @@ if Code.ensure_loaded?(Broadway) do
       :visibility_timeout,
       dynamic_repo: nil,
       listener: nil,
+      max_reads: nil,
       on_success: :delete,
       on_failure: :archive,
       read_interval: 5_000,
@@ -247,6 +246,7 @@ if Code.ensure_loaded?(Broadway) do
              :message_id => EctoPGMQ.Message.id(),
              :on_success => ack_action(),
              :on_failure => ack_action(),
+             :max_reads => pos_integer() | nil,
              optional(:ack_action) => ack_action()
            }
 
@@ -262,6 +262,7 @@ if Code.ensure_loaded?(Broadway) do
              listener: Notifications.listener(),
              on_success: ack_action(),
              on_failure: ack_action(),
+             max_reads: pos_integer() | nil,
              read_interval: Duration.t() | timeout(),
              read_opts: keyword(),
              subscription: Notifications.subscription() | nil,
@@ -513,6 +514,13 @@ if Code.ensure_loaded?(Broadway) do
       # Validate presence of required keys
       Enum.each([:repo, :queue, :visibility_timeout], &Keyword.fetch!(opts, &1))
 
+      # Validate that the maximum number of reads is positive when specified
+      max_reads = Keyword.fetch!(opts, :max_reads)
+
+      if not is_nil(max_reads) and not (is_integer(max_reads) and max_reads > 0) do
+        raise ArgumentError, "Invalid max reads: #{inspect(max_reads)}"
+      end
+
       # Validate that the producer polls or listens
       if is_nil(Keyword.fetch!(opts, :listener)) and Keyword.fetch!(opts, :read_interval) == :infinity do
         raise ArgumentError, "Producers without a listener require a finite read interval"
@@ -558,7 +566,8 @@ if Code.ensure_loaded?(Broadway) do
                    %{
                      message_id: pgmq_message.id,
                      on_success: state.on_success,
-                     on_failure: state.on_failure
+                     on_failure: state.on_failure,
+                     max_reads: state.max_reads
                    }}
               }
             end)
@@ -577,9 +586,14 @@ if Code.ensure_loaded?(Broadway) do
 
     defp normalize_ack_data(message, default_field) do
       {_, _, ack_data} = message.acknowledger
-      default = Map.fetch!(ack_data, default_field)
-      ack_action = Map.get(ack_data, :ack_action, default)
+      ack_action = Map.get_lazy(ack_data, :ack_action, fn -> default_ack_action(message, ack_data, default_field) end)
       {ack_action, ack_data.message_id}
     end
+
+    # Archive failed messages that have been read the maximum number of times
+    defp default_ack_action(%Message{metadata: %{reads: reads}}, %{max_reads: max_reads}, :on_failure)
+         when is_integer(max_reads) and reads >= max_reads, do: :archive
+
+    defp default_ack_action(_, ack_data, default_field), do: Map.fetch!(ack_data, default_field)
   end
 end

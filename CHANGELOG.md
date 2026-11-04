@@ -12,6 +12,9 @@ All notable changes to this project will be documented in this file.
 * Defer PGMQ's insert trigger so concurrent senders don't wait for each other's
   transactions
 
+* Add a `:max_reads` option to `EctoPGMQ.Producer` that archives failed
+  messages once they have been read that many times
+
 ## [2.0.0] - 2026-07-15
 
 ### Changed
